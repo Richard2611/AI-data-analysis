@@ -1,220 +1,341 @@
-import json
 import os
+import json
 
-import pandas as pd
 from dotenv import load_dotenv
-from openai import OpenAI
+from groq import Groq
 
 
-# Load environment variables from .env
 load_dotenv()
 
 
-# Create OpenAI client
-api_key = os.getenv("OPENAI_API_KEY")
+# ============================================================
+# Configuration
+# ============================================================
 
-if not api_key:
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+
+
+if not GROQ_API_KEY:
     raise ValueError(
-        "OPENAI_API_KEY was not found. "
-        "Make sure your .env file contains your API key."
+        "GROQ_API_KEY is not set. Add it to your .env file locally "
+        "or Streamlit Secrets when deploying."
     )
 
-client = OpenAI(api_key=api_key)
+
+client = Groq(
+    api_key=GROQ_API_KEY,
+    timeout=30.0,
+)
 
 
-# Model can be changed through .env
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
-
-
-# ---------------------------------------------------------
-# Build dataset context
-# ---------------------------------------------------------
-
-def build_data_context(df):
-    """
-    Create a small description of the dataset for the LLM.
-
-    The full dataset is NEVER sent to the API.
-    Only column names, data types, and 5 sample rows are included.
-    """
-
-    columns = []
-
-    for column in df.columns:
-        columns.append(
-            {
-                "name": str(column),
-                "dtype": str(df[column].dtype),
-            }
-        )
-
-    sample = (
-        df.head(5)
-        .astype(object)
-        .where(pd.notna(df.head(5)), None)
-        .to_dict(orient="records")
-    )
-
-    context = {
-        "row_count": len(df),
-        "column_count": len(df.columns),
-        "columns": columns,
-        "sample_rows": sample,
-    }
-
-    return json.dumps(context, default=str, indent=2)
-
-
-# ---------------------------------------------------------
+# ============================================================
 # Generate analysis code
-# ---------------------------------------------------------
+# ============================================================
 
 def generate_analysis_code(df, question, previous_error=None):
-    """
-    Ask the LLM to convert a natural-language question
-    into pandas/Plotly analysis code.
-    """
 
-    data_context = build_data_context(df)
+    # --------------------------------------------------------
+    # Dataset schema
+    # --------------------------------------------------------
 
-    error_context = ""
+    column_info = [
+        {
+            "name": str(column),
+            "dtype": str(df[column].dtype),
+        }
+        for column in df.columns
+    ]
 
-    if previous_error:
-        error_context = f"""
-The previous generated code failed with this error:
-
-{previous_error}
-
-Fix the code so that the error does not occur again.
-"""
+    # Only send a small sample to the LLM
+    sample_data = df.head(5).to_dict(orient="records")
 
 
-    system_prompt = """
-You are the analysis engine for an AI Data Analyst application.
+    # --------------------------------------------------------
+    # Main prompt
+    # --------------------------------------------------------
 
-Your job is to translate a user's natural-language data question
-into safe pandas and Plotly code.
+    prompt = f"""
+You are an expert business data analyst.
 
-The dataframe is already loaded into a variable called `df`.
+Your task is to convert the user's natural-language question
+into safe, executable Python code for a pandas DataFrame.
 
-Available libraries:
+============================================================
+DATASET
+============================================================
 
-- pandas as pd
-- plotly.express as px
-- plotly.graph_objects as go
+Rows:
+{len(df)}
 
-IMPORTANT RULES:
+Columns:
+{json.dumps(column_info, indent=2)}
 
-1. Use ONLY the dataframe `df`.
-2. Do not load files.
-3. Do not access the internet.
-4. Do not use requests, urllib, subprocess, os, sys, pathlib,
-   socket, shutil, importlib, or any other external module.
-5. Do not read or write files.
-6. Do not execute shell commands.
-7. Do not define functions.
-8. Do not use classes.
-9. Do not use eval() or exec().
-10. Do not access environment variables.
-11. Do not access the filesystem.
-12. Do not modify the original dataframe.
-13. Create calculations using pandas.
-14. For charts, use Plotly Express or Plotly Graph Objects.
-15. The final analysis result must be stored in a variable called `result`.
-16. If a chart is appropriate, store it in a variable called `fig`.
-17. If no chart is needed, set `fig = None`.
-18. Keep the generated code short and readable.
-19. Never invent columns that are not present in the dataset.
-20. Use the exact column names supplied in the dataset context.
-21. If a column name contains spaces or special characters,
-    use df["column name"] rather than df.column_name.
-22. Return a useful result even when the user asks a simple question.
-23. For numeric questions, calculate the answer from the data.
-24. Do not guess or manually invent numerical results.
+Sample data:
+{json.dumps(sample_data, default=str, indent=2)}
 
-The code should generally follow this pattern:
-
-result = ...
-fig = ...
-
-The `result` variable may be:
-- a pandas DataFrame
-- a pandas Series
-- a numeric value
-- a string
-- a dictionary
-
-If the user asks for a chart, create an appropriate Plotly figure.
-
-The explanation must describe what the generated analysis does,
-not fabricate findings that were not calculated.
-"""
-
-
-    user_prompt = f"""
-DATASET INFORMATION:
-
-{data_context}
-
-USER QUESTION:
+============================================================
+USER QUESTION
+============================================================
 
 {question}
 
-{error_context}
+============================================================
+CODE GENERATION RULES
+============================================================
 
-Generate the pandas/Plotly analysis required to answer the question.
+1. The DataFrame is already available as `df`.
+
+2. Use pandas as `pd`.
+
+3. Use Plotly Express as `px` when a visualization is useful.
+
+4. Use Plotly Graph Objects as `go` only when necessary.
+
+5. Do NOT load files.
+
+6. Do NOT access the filesystem.
+
+7. Do NOT access the network.
+
+8. Do NOT use:
+   - os
+   - sys
+   - subprocess
+   - requests
+   - pathlib
+   - open
+   - eval
+   - exec
+   - import statements
+   - external libraries
+
+9. Do NOT modify the original DataFrame.
+
+10. ALWAYS store the final analytical answer in a variable called `result`.
+
+11. If a visualization is useful, store the Plotly figure in `fig`.
+
+12. If no visualization is needed, set:
+    fig = None
+
+13. `result` MUST contain the underlying analytical result.
+
+14. The underlying result can be:
+    - pandas DataFrame
+    - pandas Series
+    - number
+    - string
+    - dictionary
+
+15. NEVER set:
+    result = fig
+
+16. NEVER use a Plotly Figure as the value of `result`.
+
+17. When a chart is requested, create the analytical result FIRST,
+    then create the Plotly figure from that result.
+
+18. Use only columns that actually exist in the dataset.
+
+19. Use the exact column names provided above.
+
+20. Keep the generated code concise.
+
+21. Prefer straightforward pandas operations.
+
+22. The generated code will be executed by a restricted
+    AST-based Python executor.
+
+============================================================
+CORRECT CHART PATTERN
+============================================================
+
+For example, if the user asks:
+
+"Show me the top 10 customers by sales as a bar chart."
+
+Generate code following this pattern:
+
+result = (
+    df.groupby("customer_name", as_index=False)["sales"]
+    .sum()
+    .sort_values("sales", ascending=False)
+    .head(10)
+)
+
+fig = px.bar(
+    result,
+    x="customer_name",
+    y="sales",
+    title="Top 10 Customers by Sales"
+)
+
+The important rule is:
+
+result = analytical data
+fig = visualization
+
+NEVER:
+
+result = fig
+
+============================================================
+NO-CHART PATTERN
+============================================================
+
+If the user asks:
+
+"What is the total sales?"
+
+Use:
+
+result = df["sales"].sum()
+fig = None
+
+============================================================
+CHART PATTERN
+============================================================
+
+If the user asks for a chart:
+
+result = <data used for the analysis>
+
+fig = px.bar(
+    result,
+    ...
+)
+
+============================================================
+OUTPUT
+============================================================
+
+Return valid JSON with exactly these fields:
+
+{{
+    "explanation": "Short explanation of what the analysis does.",
+    "code": "Executable Python code."
+}}
+
+Do not return markdown.
+
+Do not wrap the JSON in ```.
+
+============================================================
 """
 
 
-    # Structured output schema
-    response_schema = {
-        "type": "json_schema",
-        "name": "analysis_code",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "Python code that analyzes df."
+    # --------------------------------------------------------
+    # Retry context
+    # --------------------------------------------------------
+
+    if previous_error:
+        prompt += f"""
+
+============================================================
+PREVIOUS EXECUTION ERROR
+============================================================
+
+The previously generated code failed with this error:
+
+{previous_error}
+
+Generate corrected Python code that fixes this error.
+
+Do not repeat the same mistake.
+
+============================================================
+"""
+
+
+    # --------------------------------------------------------
+    # Call Groq
+    # --------------------------------------------------------
+
+    try:
+
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a careful business data analyst. "
+                        "Generate concise, executable pandas and Plotly "
+                        "code using only the provided dataset schema. "
+                        "Always return valid JSON."
+                    ),
                 },
-                "explanation": {
-                    "type": "string",
-                    "description": "Short explanation of what the code does."
+                {
+                    "role": "user",
+                    "content": prompt,
                 },
-                "needs_chart": {
-                    "type": "boolean",
-                    "description": "Whether the analysis should display a chart."
-                },
-            },
-            "required": [
-                "code",
-                "explanation",
-                "needs_chart",
             ],
-            "additionalProperties": False,
-        },
-    }
-
-
-    response = client.responses.create(
-        model=MODEL,
-        input=[
-            {
-                "role": "system",
-                "content": system_prompt,
+            temperature=0,
+            response_format={
+                "type": "json_object"
             },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
-        ],
-        text={
-            "format": response_schema
-        },
-    )
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            f"Groq API request failed: {error}"
+        )
 
 
-    result = json.loads(response.output_text)
+    # --------------------------------------------------------
+    # Extract response
+    # --------------------------------------------------------
+
+    if not response.choices:
+
+        raise RuntimeError(
+            "Groq returned no choices."
+        )
+
+
+    content = response.choices[0].message.content
+
+
+    if not content:
+
+        raise RuntimeError(
+            "Groq returned an empty response."
+        )
+
+
+    # --------------------------------------------------------
+    # Parse JSON
+    # --------------------------------------------------------
+
+    try:
+
+        result = json.loads(content)
+
+    except json.JSONDecodeError as error:
+
+        raise RuntimeError(
+            f"Groq returned invalid JSON: {error}"
+        )
+
+
+    # --------------------------------------------------------
+    # Validate response structure
+    # --------------------------------------------------------
+
+    if "code" not in result:
+
+        raise RuntimeError(
+            "Groq response did not contain generated code."
+        )
+
+
+    if "explanation" not in result:
+
+        result["explanation"] = (
+            "Analysis generated by the AI model."
+        )
+
 
     return result
