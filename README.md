@@ -1,159 +1,137 @@
 # AI Data Analysis App
 
-A Streamlit-based data analysis application that allows users to upload CSV or Excel datasets, automatically clean the data, generate executive insights, and analyze the dataset using natural-language questions.
+A Streamlit app where you upload a CSV or Excel file, it cleans the data automatically, writes an executive summary, and lets you ask questions about the data in plain English.
 
-The project is designed around a consulting-style workflow: **data preparation → analysis → visualization → business insight → recommendation**.
-
----
-
-## Project Overview
-
-Business analysts often spend significant time cleaning datasets and writing repetitive analysis code before they can answer business questions.
-
-This application provides a single workflow where a user can:
-
-1. Upload a CSV or Excel dataset
-2. Automatically clean and standardize the data
-3. Review a detailed cleaning report
-4. Generate an executive-style summary
-5. Ask analytical questions in natural language
-6. Execute generated pandas/Plotly analysis
-7. View tables and visualizations
-8. Export the cleaned dataset to Excel
+The workflow follows how a consultant works: **prepare the data → analyse → visualise → insight → recommendation**.
 
 ---
 
-## Key Features
+## What it does
 
-### 1. Data Upload
-
-Supports:
-
-- CSV
-- XLSX
-- XLS
-
-The application automatically detects the file type and loads the dataset using pandas.
-
-### 2. Automated Data Cleaning
-
-The cleaning pipeline handles:
-
-- Completely empty rows
-- Completely empty columns
-- Duplicate records
-- Missing values
-- Column-name standardization
-
-A cleaning report shows the impact of each operation.
-
-### 3. Executive Summary
-
-The application calculates consulting-style business insights directly from the dataset.
-
-Examples include:
-
-- Total sales
-- Average sales
-- Total profit
-- Profit margin
-- Negative-profit records
-- Leading categories
-- Sales concentration
-- Business recommendations
-
-The summary is calculated directly from the dataframe rather than relying on an LLM to invent numerical results.
-
-### 4. Natural-Language Data Analysis
-
-Users can ask questions such as:
-
-> What are the top 10 products by profit?
-
-or:
-
-> Which region has the highest sales?
-
-The application uses an LLM to translate the question into pandas/Plotly analysis code.
-
-Only dataset metadata and a small sample of rows are provided to the model rather than the complete dataset.
-
-### 5. Restricted Code Execution
-
-Generated Python code is validated using Python's Abstract Syntax Tree (AST) before execution.
-
-The execution layer restricts:
-
-- Available Python operations
-- Accessible names
-- Functions
-- Attributes
-- Imports
-- System access
-- File access
-- Network access
-
-This provides a controlled environment for executing generated analytical code.
-
-> Note: AST validation is a safety layer, not a perfect security sandbox. A production deployment handling untrusted users should additionally isolate code execution using containers or another dedicated sandboxing mechanism.
-
-### 6. Excel Export
-
-After cleaning, users can download the processed dataset as:
-
-`cleaned_data.xlsx`
+1. **Upload** a CSV, XLSX or XLS file (or click **Try it with sample data** to see it work first).
+2. **Clean** it automatically and review a before/after cleaning report.
+3. **Summarise** it: key numbers and one recommendation, calculated directly from your data.
+4. **Ask questions** in plain English and get a table, a chart and the Python code behind the answer.
+5. **Download** the cleaned file as Excel, and any answer as CSV or an interactive chart.
 
 ---
 
-## Architecture
+## Features
+
+### Upload
+CSV, XLSX and XLS files. CSV files saved by Excel in a Windows encoding, or with `;` between columns, are read correctly.
+
+### Automatic cleaning
+- Removes completely empty rows and columns
+- Removes duplicate rows
+- Fills missing numbers with the column median and missing text with `Unknown`
+- Standardises column names (`Order Date` becomes `order_date`)
+- **Turns date text into real dates.** A text column is converted only when almost all of its values look like dates and almost all of them can be read. Day-first (`14/03/2025`) and month-first (`03/14/2025`) files are told apart when the data makes it clear. This is what lets questions like "sales over time" work.
+
+### Executive summary
+Calculated from the dataframe, not by the AI, so the numbers are never made up: totals, averages, profit margin, negative-profit records, the leading category, and a recommendation.
+
+### Ask Your Data
+- Type a question or click a **suggestion** built from your own column names.
+- **Follow-up switch:** turn it on to build on the last answer ("now only for Dubai").
+- Every answer is kept in the session. The newest is open, older ones fold away.
+- If the generated code fails, the app retries up to 3 times, giving the AI the error each time.
+- Each answer can be downloaded: the table as **CSV**, the chart as an **HTML** file (it loads Plotly from the internet, so open it while online).
+- Only column names, column types and the **first 5 rows** are sent to the AI, plus your question (and, for a follow-up, the previous question and its code). The full dataset is never sent.
+
+### Large files
+Above 50,000 rows the Excel file is built only when you click **Prepare Excel file**, so the page stays fast. Files with 200,000 or more rows also show a notice that tables preview the first rows only and questions can take longer.
+
+### Works without the AI
+If no API key is set, the Ask tab explains how to add one. Upload, cleaning, summary and Excel download still work.
+
+---
+
+## Safe execution of AI-written code
+
+The AI writes Python, and the app runs it. That code is checked and limited in layers:
+
+1. **Code check before running.** Only a small set of Python operations is allowed. No imports, no function definitions, no dunder (`__x__`) access.
+2. **Only safe parts of pandas and Plotly.** `pd`, `px` and `go` expose only data-analysis functions. Anything that reads or writes files (`read_*`, `to_csv`, `write_html` ...), evaluates text as code (`eval`, `query`) or reaches other modules (`pd.io`, `.format`) is blocked.
+3. **Runtime guard.** While generated code runs, starting programs, opening network connections and writing or deleting files are refused, even if something got past the first two layers.
+4. **Time limit.** Code that runs longer than 30 seconds is stopped. Stacked powers like `9 ** 9 ** 9` and huge whole-number powers are refused.
+
+Because `df.query(...)` is blocked, the AI sometimes writes it first and then fixes itself on the retry.
+
+**Limits.** This is a restricted execution layer, not a full sandbox. The time limit stops runaway Python loops, but cannot interrupt a single huge calculation that never returns to Python. If you host this for people you do not trust, also run the analysis in a separate container or process with CPU and memory limits.
+
+This matters most for files from other people: the first 5 rows go to the AI, so text inside a file could try to steer it. The layers above are what keep that harmless.
+
+---
+
+## Setup
+
+You need Python 3.10 or newer and a free [Groq API key](https://console.groq.com/keys).
+
+```bash
+# 1. install
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# 2. add your key
+cp .env.example .env             # Windows: copy .env.example .env
+# open .env and replace your_key_here with your real key
+
+# 3. run
+streamlit run app_new.py
+```
+
+Optional: set `GROQ_MODEL` in `.env` to use a different Groq model.
+
+### Deploying on Streamlit Community Cloud
+1. Push the project to GitHub. `.env` is already in `.gitignore`, so your key stays private.
+2. Create the app and set the main file to `app_new.py`.
+3. In the app's **Settings → Secrets**, add:
+   ```toml
+   GROQ_API_KEY = "your_key_here"
+   ```
+
+---
+
+## Project structure
 
 ```text
-                 ┌─────────────────────┐
-                 │     CSV / Excel      │
-                 │       Upload         │
-                 └──────────┬──────────┘
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │    Data Cleaning    │
-                 │                     │
-                 │ • Empty rows        │
-                 │ • Empty columns     │
-                 │ • Duplicates        │
-                 │ • Missing values    │
-                 │ • Column names      │
-                 └──────────┬──────────┘
-                            │
-             ┌──────────────┼──────────────┐
-             │              │              │
-             ▼              ▼              ▼
-      ┌────────────┐ ┌────────────┐ ┌──────────────┐
-      │ Executive  │ │   Natural  │ │    Excel     │
-      │  Summary   │ │  Language  │ │    Export    │
-      │            │ │  Analysis  │ │              │
-      └────────────┘ └─────┬──────┘ └──────────────┘
-                           │
-                           ▼
-                   ┌───────────────┐
-                   │ LLM generates │
-                   │ pandas/Plotly │
-                   │     code      │
-                   └───────┬───────┘
-                           │
-                           ▼
-                   ┌───────────────┐
-                   │ AST Security  │
-                   │  Validation   │
-                   └───────┬───────┘
-                           │
-                           ▼
-                   ┌───────────────┐
-                   │    Execute    │
-                   │  Analysis     │
-                   └───────┬───────┘
-                           │
-                           ▼
-                 ┌─────────────────────┐
-                 │ Table / Metric /    │
-                 │ Plotly Visualization│
-                 └─────────────────────┘
+app_new.py            the interface (tabs, chat, downloads)
+src/
+  cleaning.py         cleaning pipeline and date detection
+  insights.py         executive summary (calculated, no AI)
+  llm.py              asks Groq to write the analysis code
+  executor.py         checks and runs the AI-written code
+  export.py           builds the cleaned Excel file
+.streamlit/
+  config.toml         dark theme, hides the Deploy button
+requirements.txt
+.env.example          copy to .env and add your key
+```
+
+## How it fits together
+
+```text
+        CSV / Excel upload   (or sample data)
+                  │
+                  ▼
+            Data cleaning
+   empty rows · empty columns · duplicates
+   missing values · column names · dates
+                  │
+      ┌───────────┼─────────────┐
+      ▼           ▼             ▼
+ Executive     Ask Your       Excel
+  summary        Data        download
+                  │
+                  ▼
+        AI writes pandas / Plotly code
+        (sees column names + 5 rows only)
+                  │
+                  ▼
+   Code check → runtime guard → 30 s limit
+                  │
+                  ▼
+     Table · metric · chart · CSV / HTML download
+```
